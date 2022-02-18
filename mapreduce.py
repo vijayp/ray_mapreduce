@@ -5,6 +5,7 @@ import time
 from collections import defaultdict
 from itertools import islice
 import math
+from smart_open import open as smart_open
 
 ''' 
 This is a simple implementation of an easy-to-use mapreduce using the ray.io framework in python.
@@ -117,8 +118,10 @@ class Reducer(object):
         self._done = True
         return outputs
 
-def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=1000):
-    chunk_size = min(max_chunk_size, math.ceil(len(data_list) / num_mappers))
+def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=1000, dataset_size=None):
+    if dataset_size is None:
+        dataset_size = len(data_list)
+    chunk_size = min(max_chunk_size, math.ceil(dataset_size / num_mappers))
     mappers = [Mapper.remote(map_fcn, num_reducers) for _ in range(num_mappers)]
     reducers = [Reducer.remote(reduce_fcn, mappers, shard) for shard in range(num_reducers)]
     output = []
@@ -136,6 +139,14 @@ def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers, max
     for ro in output:
         rval += ray.get(ro)
     return rval
+
+def MapReduceWithOneFileInput(filename, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=1000, ignore_first_line=False):
+    with smart_open(filename, 'r') as fd:
+        if ignore_first_line:
+            next(fd)
+        # we can't easily estimate the number of lines in the file, so set it to a big number
+        dataset_size = 1<<30
+        return MapReduceBulk(fd, map_fcn, reduce_fcn, num_mappers,num_mappers, max_chunk_size, dataset_size)
 
 
 

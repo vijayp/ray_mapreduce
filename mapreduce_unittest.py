@@ -4,6 +4,7 @@ import ray
 import time
 
 def map_fcn(data):
+    data = int(data)
     yield data % 9, data**2
 
 def reduce_fcn(k, valuelist):
@@ -53,6 +54,21 @@ class MapReduceTest(unittest.TestCase):
         num_reducers = 4
         output = mapreduce.MapReduceBulk(self._testdata, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=10)
         self.assertEqual(sorted(output), sorted(self._output))
-        
+
+    def testFileMapReduceWithHeader(self):
+        num_mappers = 3
+        num_reducers = 4
+        test_filename_with_header = 'testdata/file_with_header'
+        output = mapreduce.MapReduceWithOneFileInput(test_filename_with_header, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=10, ignore_first_line=True)
+        self.assertEqual(sorted(output), sorted(self._output))
+
+    def testFileMapReduceWithoutHeader(self):
+        num_mappers = 3
+        num_reducers = 4
+        test_filename_with_header = 'testdata/file_without_header'
+        output = mapreduce.MapReduceWithOneFileInput(test_filename_with_header, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=10, ignore_first_line=True)
+        self.assertEqual(sorted(output), sorted(self._output))
+
+
 if __name__ == '__main__':
     unittest.main()
