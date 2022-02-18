@@ -35,7 +35,7 @@ class MapReduceTest(unittest.TestCase):
         REDUCERS = 10
         mappers = [mapreduce.Mapper.remote(map_fcn, REDUCERS)]
         for mapper in mappers:
-            mapper.bulk_map.remote(self._testdata)
+            mapper.bulk_map.remote(self._testdata, True)
         
         reducers = [mapreduce.Reducer.remote(reduce_fcn, mappers, shard) for shard in range(REDUCERS)]
         output = []
@@ -51,7 +51,7 @@ class MapReduceTest(unittest.TestCase):
     def testBulkMapReduce(self):
         num_mappers = 3
         num_reducers = 4
-        output = mapreduce.MapReduceBulk(self._testdata, map_fcn, reduce_fcn, num_mappers, num_reducers)
+        output = mapreduce.MapReduceBulk(self._testdata, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=10)
         self.assertEqual(sorted(output), sorted(self._output))
         
 if __name__ == '__main__':

@@ -63,22 +63,24 @@ class Mapper(object):
         for k, v in values:
             self._shard_to_buffer[self._shard_for_key(k)].append((k,v))
 
-    def bulk_map(self, data_list):
-        # TODO this is blocking. It will currently cache in memory all intermediate results
-        # in order to enable streaming MR, this should be changed to use Queues.
+    def bulk_map(self, data_list, done=False):
+        # TODO This will currently cache in memory all intermediate results
+        # until the reducer asks for its piece.
+        # for best performance, don't send chunks that are too large!
         for datum in data_list:
             self.map(datum)
-        self.set_done()
 
-    def set_done(self):
+        if done:
+            self.done()
+
+
+    def done(self):
         self._done = True
 
     def get_pending_data_for_reducer(self, reducer_no):
         assert reducer_no < self._num_reducers
         rval = self._shard_to_buffer[reducer_no]
         if rval:
-            # TODO: this should probably be atomic in a better way 
-            # but for now ray runs things in an event loop so this should be blocking.
             self._shard_to_buffer[reducer_no] = []
             return rval
         elif self._done:
@@ -115,16 +117,21 @@ class Reducer(object):
         self._done = True
         return outputs
 
-def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers):
-    chunks = list(chunk(data_list, math.ceil(len(data_list) / num_mappers)))
+def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=1000):
+    chunk_size = min(max_chunk_size, math.ceil(len(data_list) / num_mappers))
     mappers = [Mapper.remote(map_fcn, num_reducers) for _ in range(num_mappers)]
-    for i, mapper in enumerate(mappers):
-        mapper.bulk_map.remote(chunks[i])
-    
     reducers = [Reducer.remote(reduce_fcn, mappers, shard) for shard in range(num_reducers)]
     output = []
     for reducer in reducers:
         output.append(reducer.reduce.remote())
+
+    for i, data_chunk in enumerate(chunk(data_list, chunk_size)):
+        mapper = mappers[i % num_mappers]
+        mapper.bulk_map.remote(data_chunk)
+
+    for m in mappers:
+        m.done.remote()
+
     rval = []
     for ro in output:
         rval += ray.get(ro)
