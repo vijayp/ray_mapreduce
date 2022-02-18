@@ -2,6 +2,7 @@ import ray
 import time
 from collections import defaultdict
 from itertools import islice
+from ray.util.queue import Queue
 
 def chunk(it, size):
     it = iter(it)
@@ -10,11 +11,11 @@ def chunk(it, size):
 
 @ray.remote
 class Mapper(object):
-    def __init__(self, map_function, num_reducers):
+    def __init__(self, map_function, reducer_queues):
         self._map_function = map_function
-        self._num_reducers = num_reducers
+        self._reducer_queues = reducer_queues
+        self._num_reducers = len(reducer_queues)
         self._shard_to_buffer = [ [] for _ in range(self._num_reducers) ]
-        self._done = False
 
     def _shard_for_key(self, key):
         return hash(key) % self._num_reducers
@@ -25,66 +26,54 @@ class Mapper(object):
             self._shard_to_buffer[self._shard_for_key(k)].append((k,v))
 
     def bulk_map(self, data_list):
+        print('mapper data list' , data_list)
         for datum in data_list:
+            print(datum)
             self.map(datum)
-        self.set_done()
-
-    def set_done(self):
-        self._done = True
-
-    def get_pending_data_for_reducer(self, reducer_no):
-        assert reducer_no < self._num_reducers
-        rval = self._shard_to_buffer[reducer_no]
-        if rval:
-            # TODO: this should probably be atomic in a better way
-            # this might lose data now
-            self._shard_to_buffer[reducer_no] = []
-            print('returning %s for shard %d'  % (str(rval), reducer_no))
-            return rval
-        elif self._done:
-            return None
-        else:
-            return []
-
+        # todo send these in smaller chunks?
+        for shard, kvlist in enumerate(self._shard_to_buffer):
+            print('->',shard, kvlist)
+            self._reducer_queues[shard].put(kvlist)
+        for q in self._reducer_queues:
+            q.put(None)
 
 @ray.remote
 class Reducer(object):
-    def __init__(self, reduce_function, mappers, my_shard):
+    def __init__(self, reduce_function, in_queue, num_mappers):
         self._reduce_function = reduce_function
-        self._mappers = mappers
-        self._my_shard = my_shard
-        self._done = False
+        self._in_queue = in_queue
+        self._num_mappers_left = num_mappers
 
     def reduce(self):
         to_process = defaultdict(list)
-        outputs = []
-        while self._mappers:
-            new_mappers = []
-            for i, m in enumerate(self._mappers):
-                values = m.get_pending_data_for_reducer.remote(self._my_shard)
-                values = ray.get(values)
-                print ('got %s for my shard %d from mapper %d' % (str(values), self._my_shard, i))
-                if values is not None:
-                    new_mappers.append(m)
-                    for (k,v) in values:
-                        to_process[k].append(v)
-            self._mappers = new_mappers
-            if new_mappers:
-                time.sleep(1)
-        print ('reduce %d done with %s' % (self._my_shard, str(to_process.items())))
-        for k, v_list in to_process.items():
-            outputs.append(self._reduce_function(k, v_list))
-        print ('reduce %d done with %s' % (self._my_shard, str(outputs)))
-        self._done = True
+        while self._num_mappers_left:
+            values = self._in_queue.get(block=True)
+            print(values, self._num_mappers_left)
+            if values is None:
+                self._num_mappers_left -= 1
+                continue
+            for (k,v) in values:
+                to_process[k].append(v)
+            outputs = []
+            print ('reduce done with %s' % ( str(to_process.items())))
+            for k, v_list in to_process.items():
+                outputs.append(self._reduce_function(k, v_list))
+            print ('reduce done with %s' % (str(outputs)))
+            self._done = True
         return outputs
 
-def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers):
+def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers, max_queue_size=1<<10):
+    print('dl', data_list)
     chunks = list(chunk(data_list, num_mappers))
-    mappers = [Mapper.remote(map_fcn, num_reducers) for _ in range(num_mappers)]
+
+    print ('chunks: ', chunks)
+    queues = [Queue(maxsize=max_queue_size) for _ in range(num_reducers)]
+
+    mappers = [Mapper.remote(map_fcn, queues) for _ in range(num_mappers)]
     for i, mapper in enumerate(mappers):
         mapper.bulk_map.remote(chunks[i])
     
-    reducers = [Reducer.remote(reduce_fcn, mappers, shard) for shard in range(num_reducers)]
+    reducers = [Reducer.remote(reduce_fcn, queues[i], num_mappers) for i in range(num_reducers)]
     output = []
     for reducer in reducers:
         output.append(reducer.reduce.remote())
