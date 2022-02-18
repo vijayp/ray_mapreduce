@@ -1,5 +1,3 @@
-from cgi import test
-from stringprep import map_table_b2
 import unittest
 import mapreduce 
 import ray
@@ -49,16 +47,12 @@ class MapReduceTest(unittest.TestCase):
                 outputs.append((k,v))
 
         self.assertEqual(outputs, self._output)
-        
 
     def testBulkMapReduce(self):
         num_mappers = 3
         num_reducers = 4
         output = mapreduce.MapReduceBulk(self._testdata, map_fcn, reduce_fcn, num_mappers, num_reducers)
-        #self.assertEqual(output, self._output)
+        self.assertEqual(sorted(output), sorted(self._output))
         
-        
-
-
 if __name__ == '__main__':
     unittest.main()

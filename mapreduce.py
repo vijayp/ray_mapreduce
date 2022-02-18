@@ -2,6 +2,7 @@ import ray
 import time
 from collections import defaultdict
 from itertools import islice
+import math
 
 def chunk(it, size):
     it = iter(it)
@@ -36,10 +37,9 @@ class Mapper(object):
         assert reducer_no < self._num_reducers
         rval = self._shard_to_buffer[reducer_no]
         if rval:
-            # TODO: this should probably be atomic in a better way
-            # this might lose data now
+            # TODO: this should probably be atomic in a better way 
+            # but for now ray runs things in an event loop so this should be blocking.
             self._shard_to_buffer[reducer_no] = []
-            print('returning %s for shard %d'  % (str(rval), reducer_no))
             return rval
         elif self._done:
             return None
@@ -63,7 +63,6 @@ class Reducer(object):
             for i, m in enumerate(self._mappers):
                 values = m.get_pending_data_for_reducer.remote(self._my_shard)
                 values = ray.get(values)
-                print ('got %s for my shard %d from mapper %d' % (str(values), self._my_shard, i))
                 if values is not None:
                     new_mappers.append(m)
                     for (k,v) in values:
@@ -71,15 +70,13 @@ class Reducer(object):
             self._mappers = new_mappers
             if new_mappers:
                 time.sleep(1)
-        print ('reduce %d done with %s' % (self._my_shard, str(to_process.items())))
         for k, v_list in to_process.items():
             outputs.append(self._reduce_function(k, v_list))
-        print ('reduce %d done with %s' % (self._my_shard, str(outputs)))
         self._done = True
         return outputs
 
 def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers):
-    chunks = list(chunk(data_list, num_mappers))
+    chunks = list(chunk(data_list, math.ceil(len(data_list) / num_mappers)))
     mappers = [Mapper.remote(map_fcn, num_reducers) for _ in range(num_mappers)]
     for i, mapper in enumerate(mappers):
         mapper.bulk_map.remote(chunks[i])
@@ -89,8 +86,6 @@ def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers):
     for reducer in reducers:
         output.append(reducer.reduce.remote())
     rval = []
-    time.sleep(1)
-    print('FECTHING!!')
     for ro in output:
         rval += ray.get(ro)
     return rval
