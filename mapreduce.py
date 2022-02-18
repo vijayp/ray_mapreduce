@@ -1,8 +1,46 @@
+# Copyright (c) 2022 Vijay Pandurangan
+
 import ray
 import time
 from collections import defaultdict
 from itertools import islice
 import math
+
+''' 
+This is a simple implementation of an easy-to-use mapreduce using the ray.io framework in python.
+
+For this to work, you must declare two functions:
+
+    map_fcn is a generator function, which accepts one piece of data as an argument, and yields any number of (k,v) tuples
+
+    reduce_fcn is a function which, when given as an argument, a key and a list of values, returns a specific output.
+
+You can then provide a list of data and the number of mappers and reducers to the MapReduceBulk() and it will compute
+the result in a distributed fashion. If you are running this on a ray cluster, the computation will be automatically 
+sent to multiple computers for processing.
+
+TODO: bulk interface is not optimal, because it is blocking and not streaming
+TODO: we should support using a filesystem because currently the computer on which
+    you run the main program has to process all data; it would be faster to use split datafiles
+
+An example can be found in the unittest. Here is another. For each number between 0 and 1000, 
+this will compute the sum of the number's square root and its square:
+
+import mapreduce
+import ray
+
+ray.init() # note, you can supply an address to target a different cluster.
+
+def map_fcn(data):
+    yield data, data**2
+    yield data, data**0.5    
+
+def reduce_fcn(k, valuelist):
+    return (k, sum(valuelist))
+
+data = [x for x in range(1000)]
+print(mapreduce.MapReduceBulk(data, map_fcn, reduce_fcn, 50, 5))
+'''
 
 def chunk(it, size):
     it = iter(it)
@@ -26,6 +64,8 @@ class Mapper(object):
             self._shard_to_buffer[self._shard_for_key(k)].append((k,v))
 
     def bulk_map(self, data_list):
+        # TODO this is blocking. It will currently cache in memory all intermediate results
+        # in order to enable streaming MR, this should be changed to use Queues.
         for datum in data_list:
             self.map(datum)
         self.set_done()

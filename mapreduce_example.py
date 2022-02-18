@@ -1,32 +1,17 @@
-#!/usr/bin/env python3
-# Copyright (c) 2022 Vijay Pandurangan 
+import unittest
+import mapreduce 
+import ray
+import time
 
+num_mappers = 3
+num_reducers = 4
+ray.init()
+testdata = range(1000)
 
-''' This is an example of how to use the mapreduce code. '''
+def map_fcn(data):
+    yield data % 9, data**2
 
-import argparse
-import logging
-import sys
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='kickstartbio')
-    parser.add_argument('-p', '--program_name', required=True, type=str, help='name of the program')
-    parser.add_argument('-a', '--author', required=True, type=str, help='name for the author')
-    parser.add_argument('-o', '--out', required=True, type=str, help='output directory')
-    parser.add_argument('-v', '--verbose', default=False, action="store_true",
-                        help="print details")
-    args = parser.parse_args()
-    logging.basicConfig(
-        level=logging.INFO if not args.verbose else logging.DEBUG,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler("debug.log"),
-            logging.StreamHandler()
-        ]
-    )
-
-    logging.info('starting up!')
-    kickstartbio_lib.process(args.program_name, args.author, args.out)
-    sys.exit(0)
-
+def reduce_fcn(k, valuelist):
+    return (k, max(valuelist))
+output = mapreduce.MapReduceBulk(testdata, map_fcn, reduce_fcn, num_mappers, num_reducers)
+print(output)
