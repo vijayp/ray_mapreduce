@@ -48,7 +48,7 @@ def chunk(it, size):
     return iter(lambda: list(islice(it, size)), [])
 
 
-@ray.remote
+@ray.remote(num_cpus=1)
 class Mapper(object):
     def __init__(self, map_function, num_reducers):
         self._map_function = map_function
@@ -74,6 +74,10 @@ class Mapper(object):
         if done:
             self.done()
 
+    def map_file_contents(self, filename, done=False):
+        print('mapper mapping ', filename)
+        return self.bulk_map(smart_open(filename, 'r'))
+
 
     def done(self):
         self._done = True
@@ -90,7 +94,7 @@ class Mapper(object):
             return []
 
 
-@ray.remote
+@ray.remote(num_cpus=1)
 class Reducer(object):
     def __init__(self, reduce_function, mappers, my_shard):
         self._reduce_function = reduce_function
@@ -118,7 +122,17 @@ class Reducer(object):
         self._done = True
         return outputs
 
-def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=1000, dataset_size=None):
+
+
+def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=1000, dataset_size=None, distribute_work_fcn=None):
+    def default_distribute_work_fcn(data_list, chunk_size, mappers):
+        num_mappers = len(mappers)
+        for i, data_chunk in enumerate(chunk(data_list, chunk_size)):
+            mapper = mappers[i % num_mappers]
+            mapper.bulk_map.remote(data_chunk)
+    if distribute_work_fcn is None:
+        distribute_work_fcn = default_distribute_work_fcn
+
     if dataset_size is None:
         dataset_size = len(data_list)
     chunk_size = min(max_chunk_size, math.ceil(dataset_size / num_mappers))
@@ -127,10 +141,7 @@ def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers, max
     output = []
     for reducer in reducers:
         output.append(reducer.reduce.remote())
-
-    for i, data_chunk in enumerate(chunk(data_list, chunk_size)):
-        mapper = mappers[i % num_mappers]
-        mapper.bulk_map.remote(data_chunk)
+    distribute_work_fcn(data_list, chunk_size, mappers)
 
     for m in mappers:
         m.done.remote()
@@ -140,15 +151,29 @@ def MapReduceBulk(data_list, map_fcn, reduce_fcn, num_mappers, num_reducers, max
         rval += ray.get(ro)
     return rval
 
+
 def MapReduceWithOneFileInput(filename, map_fcn, reduce_fcn, num_mappers, num_reducers, max_chunk_size=1000, ignore_first_line=False):
     with smart_open(filename, 'r') as fd:
         if ignore_first_line:
             next(fd)
         # we can't easily estimate the number of lines in the file, so set it to a big number
         dataset_size = 1<<30
-        return MapReduceBulk(fd, map_fcn, reduce_fcn, num_mappers,num_mappers, max_chunk_size, dataset_size)
+        return MapReduceBulk(fd, map_fcn, reduce_fcn, num_mappers,num_reducers, max_chunk_size, dataset_size)
 
 
+
+def MapReduceWithMultipleFiles(index_filename, map_fcn, reduce_fcn, num_mappers, num_reducers):
+    def distribute_filenames_fcn(filename_list, chunk_size, mappers):
+        num_mappers = len(mappers)
+        for i, filename in enumerate(filename_list):
+            mapper = mappers[i % num_mappers]
+            mapper.map_file_contents.remote(filename)
+
+
+    with smart_open(index_filename, 'r') as index_fn:
+        filenames = [f.strip() for f in index_fn]
+        # distribute the filenames.
+        return MapReduceBulk(filenames,  map_fcn, reduce_fcn, num_mappers,num_reducers, distribute_work_fcn=distribute_filenames_fcn)
 
 
 
