@@ -6,7 +6,8 @@ from collections import defaultdict
 from itertools import islice
 import math
 from smart_open import open as smart_open
-
+import hashlib
+import functools
 ''' 
 This is a simple implementation of an easy-to-use mapreduce using the ray.io framework in python.
 
@@ -56,8 +57,20 @@ class Mapper(object):
         self._shard_to_buffer = [ [] for _ in range(self._num_reducers) ]
         self._done = False
 
+        # this is a bit crazy because we can't use the decorator due to
+        # cloudpickle ray issues.
+        self._do_hash = functools.lru_cache(maxsize=16*(1<<20))(self._shard_for_key_internal)
+    
     def _shard_for_key(self, key):
-        return hash(key) % self._num_reducers
+        return self._do_hash(key)
+
+    # again, this cannot be directly wrapped by lru_cache.
+    def _shard_for_key_internal(self, key):
+        shards = self._num_reducers
+        h = int(hashlib.sha256(key.encode('utf-8')).hexdigest(), base=16)
+        return h % shards
+
+        # return shard_for_key(key, self._num_reducers)
 
     def map(self, data):
         values = self._map_function(data)
@@ -75,7 +88,6 @@ class Mapper(object):
             self.done()
 
     def map_file_contents(self, filename, done=False):
-        print('mapper mapping ', filename)
         return self.bulk_map(smart_open(filename, 'r'))
 
 
@@ -159,7 +171,6 @@ def MapReduceWithOneFileInput(filename, map_fcn, reduce_fcn, num_mappers, num_re
         # we can't easily estimate the number of lines in the file, so set it to a big number
         dataset_size = 1<<30
         return MapReduceBulk(fd, map_fcn, reduce_fcn, num_mappers,num_reducers, max_chunk_size, dataset_size)
-
 
 
 def MapReduceWithMultipleFiles(index_filename, map_fcn, reduce_fcn, num_mappers, num_reducers):

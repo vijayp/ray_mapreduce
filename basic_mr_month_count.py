@@ -5,7 +5,7 @@ from collections import defaultdict
 import mapreduce
 import ray
 from ray.autoscaler.sdk import request_resources
-
+import time
 
 def mymap(line):
     DATE_COL = 3
@@ -35,7 +35,8 @@ if __name__ == '__main__':
     ray.init(
         address='auto'
     )
-    request_resources(num_cpus=40)
+    request_resources(num_cpus=(num_mappers + num_reducers))
+    time.sleep(10)
     rval = mapreduce.MapReduceWithMultipleFiles(
         sys.argv[1],
         mymap,
